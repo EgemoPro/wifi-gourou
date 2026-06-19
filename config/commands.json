@@ -1,0 +1,441 @@
+{
+  "meta": {
+    "version": "2.0",
+    "description": "Registre des actions wifizone-agent",
+    "updated": "2026-06-16",
+    "note": "Les actions de type 'routeros' exécutent un script .rsc via SSH. Les actions de type 'python' utilisent un handler Python (logique métier complexe)."
+  },
+
+  "actions": {
+
+    "hotspot.create_user": {
+      "type": "routeros",
+      "script": "hotspot/add_user.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Crée un utilisateur hotspot",
+      "params": [
+        {"name": "username", "required": true, "type": "string", "max_length": 32},
+        {"name": "password", "required": true, "type": "string", "max_length": 64},
+        {"name": "profile", "required": false, "type": "string", "default": "default"}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["create_user"]
+    },
+
+    "hotspot.delete_user": {
+      "type": "routeros",
+      "script": "hotspot/delete_user.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Supprime un utilisateur hotspot",
+      "params": [
+        {"name": "username", "required": true, "type": "string", "max_length": 32}
+      ],
+      "danger": "medium",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["remove_user"]
+    },
+
+    "hotspot.disable_user": {
+      "type": "routeros",
+      "script": "hotspot/disable_user.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Désactive un utilisateur hotspot",
+      "params": [
+        {"name": "username", "required": true, "type": "string", "max_length": 32}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["disable_user"]
+    },
+
+    "hotspot.enable_user": {
+      "type": "routeros",
+      "script": "hotspot/enable_user.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Réactive un utilisateur hotspot",
+      "params": [
+        {"name": "username", "required": true, "type": "string", "max_length": 32}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["enable_user"]
+    },
+
+    "hotspot.kick_user": {
+      "type": "routeros",
+      "script": "hotspot/kick_user.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Déconnecte un utilisateur hotspot actif",
+      "params": [
+        {"name": "username", "required": true, "type": "string", "max_length": 32}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["kick_client"]
+    },
+
+    "hotspot.list_active": {
+      "type": "routeros",
+      "script": "hotspot/list_active.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste les utilisateurs hotspot actifs",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["get_active_users"]
+    },
+
+    "hotspot.block_mac": {
+      "type": "routeros",
+      "script": "network/block_mac.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Bloque une adresse MAC via address-list",
+      "params": [
+        {"name": "mac", "required": true, "type": "string", "pattern": "^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$"},
+        {"name": "comment", "required": false, "type": "string", "default": ""}
+      ],
+      "danger": "medium",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["block_mac"]
+    },
+
+    "hotspot.unblock_mac": {
+      "type": "routeros",
+      "script": "network/unblock_mac.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Débloque une adresse MAC",
+      "params": [
+        {"name": "mac", "required": true, "type": "string", "pattern": "^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$"}
+      ],
+      "danger": "medium",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": []
+    },
+
+    "hotspot.vouchers": {
+      "type": "python",
+      "handler": "generate_vouchers",
+      "description": "Génère des codes vouchers hotspot (logique Python complexe)",
+      "params": [
+        {"name": "qty", "required": false, "type": "int", "default": 1, "min": 1, "max": 99},
+        {"name": "profile", "required": false, "type": "string", "default": "default"},
+        {"name": "user_mode", "required": false, "type": "string", "default": "voucher"},
+        {"name": "time_limit", "required": false, "type": "string", "default": ""},
+        {"name": "data_limit", "required": false, "type": "string", "default": ""},
+        {"name": "price", "required": false, "type": "string", "default": ""},
+        {"name": "login_url", "required": false, "type": "string", "default": ""},
+        {"name": "name_length", "required": false, "type": "int", "default": 8},
+        {"name": "charset", "required": false, "type": "string", "default": "ABCD"},
+        {"name": "comment", "required": false, "type": "string", "default": ""}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "2.0",
+      "alias": ["generate_vouchers"]
+    },
+
+    "export_pdf": {
+      "type": "python",
+      "handler": "export_pdf",
+      "description": "Exporte une liste de vouchers vers un fichier PDF imprimable (32 tickets/page, A4)",
+      "params": [
+        {"name": "vouchers", "required": true, "type": "json", "description": "Liste des vouchers à inclure dans le PDF"},
+        {"name": "filename", "required": false, "type": "string", "default": "", "description": "Nom du fichier PDF (généré automatiquement si vide)"}
+      ],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": ["export_pdf"]
+    },
+
+    "profile.create": {
+      "type": "routeros",
+      "script": "hotspot/create_profile.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Crée un profil hotspot avec rate-limiting",
+      "params": [
+        {"name": "profileName", "required": true, "type": "string", "max_length": 32},
+        {"name": "rate_limit", "required": false, "type": "string", "default": "1M/1M"},
+        {"name": "shared_users", "required": false, "type": "int", "default": 1},
+        {"name": "session_timeout", "required": false, "type": "string", "default": ""},
+        {"name": "idle_timeout", "required": false, "type": "string", "default": ""},
+        {"name": "data_limit", "required": false, "type": "string", "default": ""}
+      ],
+      "danger": "medium",
+      "roles": ["admin"],
+      "version": "2.0",
+      "alias": ["create_profile"]
+    },
+
+    "profile.update": {
+      "type": "python",
+      "handler": "update_profile",
+      "description": "Met à jour un profil hotspot existant",
+      "params": [
+        {"name": "name", "required": true, "type": "string"},
+        {"name": "rate_limit", "required": false, "type": "string"},
+        {"name": "shared_users", "required": false, "type": "int"},
+        {"name": "session_timeout", "required": false, "type": "string"},
+        {"name": "idle_timeout", "required": false, "type": "string"},
+        {"name": "data_limit", "required": false, "type": "string"}
+      ],
+      "danger": "medium",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["update_profile"]
+    },
+
+    "profile.list": {
+      "type": "routeros",
+      "script": "hotspot/list_profiles.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste tous les profils hotspot",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["list_profiles"]
+    },
+
+    "router.reboot": {
+      "type": "routeros",
+      "script": "system/reboot.rsc",
+      "mode": "import",
+      "timeout": 30,
+      "description": "Redémarre le routeur (confirmation requise)",
+      "params": [
+        {"name": "confirm", "required": true, "type": "bool"}
+      ],
+      "danger": "high",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["reboot_router"]
+    },
+
+    "router.backup": {
+      "type": "python",
+      "handler": "backup_router",
+      "description": "Backup config MikroTik (SSH + SFTP download)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["backup_config"]
+    },
+
+    "router.health": {
+      "type": "routeros",
+      "script": "diagnostics/health.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Récupère les métriques de santé du routeur",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["get_system_info"]
+    },
+
+    "router.info": {
+      "type": "routeros",
+      "script": "diagnostics/info.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Informations détaillées du système",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": []
+    },
+
+    "network.interfaces": {
+      "type": "routeros",
+      "script": "diagnostics/interfaces.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste les interfaces réseau avec statut",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": []
+    },
+
+    "system.scheduler_list": {
+      "type": "routeros",
+      "script": "diagnostics/schedulers.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste les scripts planifiés",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator"],
+      "version": "1.0",
+      "alias": []
+    },
+
+    "router.check_update": {
+      "type": "routeros",
+      "script": "network/check_update.rsc",
+      "mode": "import",
+      "timeout": 30,
+      "description": "Vérifie les mises à jour RouterOS disponibles (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["check_update", "check_routeros_update"]
+    },
+
+    "network.list_blocklist": {
+      "type": "routeros",
+      "script": "network/list_blocklist.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Liste les address-lists firewall (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["list_blocklist", "get_blocklist"]
+    },
+
+    "network.list_wireless": {
+      "type": "routeros",
+      "script": "network/list_wireless.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Liste les clients WiFi connectés (Wave2 + Legacy, lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["list_wireless", "get_wireless_clients"]
+    },
+
+    "network.wan_info": {
+      "type": "routeros",
+      "script": "network/wan_info.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Infos WAN (IP, passerelle, DNS) — lecture seule",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["wan_info", "get_wan_info"]
+    },
+
+    "system.firmware": {
+      "type": "routeros",
+      "script": "system/firmware.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Infos firmware RouterBOARD (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["firmware_info", "get_firmware"]
+    },
+
+    "system.logs": {
+      "type": "routeros",
+      "script": "system/logs.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Récupère les logs critiques, erreurs et récents (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["get_logs", "system_logs"]
+    },
+
+    "network.dhcp_leases": {
+      "type": "routeros",
+      "script": "network/dhcp_leases.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Liste les baux DHCP (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["dhcp_leases", "get_dhcp_leases"]
+    },
+
+    "network.top_users": {
+      "type": "routeros",
+      "script": "network/top_users.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Consommateurs réseau : files d'attente + sessions hotspot actives (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["top_users", "get_top_users"]
+    },
+
+    "network.neighbors": {
+      "type": "routeros",
+      "script": "network/neighbors.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Équipements réseau voisins découverts (LLDP/CDP/MNDP, lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["neighbors", "get_neighbors"]
+    },
+
+    "system.certificates": {
+      "type": "routeros",
+      "script": "system/certificates.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "État des certificats SSL (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["certificates", "get_certificates"]
+    },
+
+    "system.uptime": {
+      "type": "routeros",
+      "script": "system/uptime.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Ressources système + uptime + historique (lecture seule)",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["uptime", "get_uptime"]
+    }
+
+  }
+}

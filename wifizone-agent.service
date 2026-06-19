@@ -1,0 +1,19 @@
+[Unit]
+Description=WIFIZONE Site Agent
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/wifizone-agent
+Environment=ENV_PATH=/opt/wifizone-agent/.env
+Environment=LOG_LEVEL=INFO
+ExecStart=/opt/wifizone-agent/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
