@@ -28,8 +28,29 @@ wifizone-agent/
 ├── main.py             # API FastAPI (ports 9000/9001)
 ├── config.py           # Configuration et validation .env
 ├── deploy.sh           # Script de déploiement headless
+├── mikrotik-agent-setup.rsc  # Script à exécuter sur le routeur pour créer l'utilisateur SSH
+├── collector.py        # Collecteur de logs complémentaire
+├── models.py           # Modèles de données SQLAlchemy
 ├── voucher_pdf.py      # Génération de tickets PDF
+├── requirements.txt    # Dépendances Python
 └── tests/              # 224 tests unitaires
+```
+
+## Quick Start
+
+```bash
+# 1. Copier et paramétrer la configuration
+cp .env.site_a .env
+# Éditer SITE_ID, MIKROTIK_HOST, MIKROTIK_USER, CENTRAL_API_KEY
+
+# 2. Lancer l'agent (mode développement)
+python main.py
+
+# 3. Tester une commande
+curl -X POST http://localhost:9001/command \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: votre_cle_api" \
+  -d '{"action": "hotspot.list_active"}'
 ```
 
 ## Actions disponibles (27)
@@ -145,6 +166,40 @@ curl -X POST http://localhost:9001/command \
   -H "Content-Type: application/json" \
   -H "X-API-Key: votre_cle_api" \
   -d '{"action": "hotspot.list_active"}'
+```
+
+Exemple de réponse :
+
+```json
+{
+  "status": "success",
+  "action": "hotspot.list_active",
+  "site_id": "SITE_A",
+  "data": [
+    {
+      "user": "client001",
+      "address": "192.168.1.42",
+      "uptime": "2h15m",
+      "bytes_in": 52428800,
+      "bytes_out": 10485760
+    }
+  ],
+  "execution_time_ms": 134,
+  "timestamp": "2026-06-21T08:30:00Z"
+}
+```
+
+### Cas d'erreur
+
+```json
+{
+  "status": "error",
+  "action": "hotspot.delete_user",
+  "site_id": "SITE_A",
+  "error": "User not found",
+  "execution_time_ms": 45,
+  "timestamp": "2026-06-21T08:31:00Z"
+}
 ```
 
 ## Tests
