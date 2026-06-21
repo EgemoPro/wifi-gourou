@@ -214,18 +214,39 @@ python -m pytest tests/ --cov=. --cov-report=term
 # 224 tests — aucun échec attendu
 ```
 
-## Maintenance
+## Makefile
 
 ```bash
-# Voir le status du service
-systemctl status wifizone-agent
-
-# Logs en temps réel
-journalctl -u wifizone-agent -f
-
-# Désinstaller
-make uninstall
+make help         # Affiche toutes les commandes disponibles
 ```
+
+### Configuration
+| Commande | Description |
+|---|---|
+| `make setup` | Configuration interactive (.env) |
+| `make test` | Tests de connectivité |
+
+### Développement
+| Commande | Description |
+|---|---|
+| `make install-deps` | Installer les dépendances Python |
+| `make run` | Démarrer l'agent en mode développement |
+| `make debug` | Démarrer en mode DEBUG (logs verbeux) |
+
+### Production (systemd)
+| Commande | Description |
+|---|---|
+| `make install-service` | Installer le service systemd |
+| `make start-service` | Démarrer le service |
+| `make stop-service` | Arrêter le service |
+| `make status` | État du service |
+| `make logs` | Logs en temps réel |
+
+### Maintenance
+| Commande | Description |
+|---|---|
+| `make clean` | Nettoyer caches et logs |
+| `make uninstall` | Désinstaller complètement (service + fichiers + base) |
 
 ## Licence
 
