@@ -72,9 +72,9 @@ class Forwarder:
         forwarder.send_alert(alert_data)
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, queue: Optional[Queue] = None):
         self.config = config
-        self.queue = Queue()
+        self.queue = queue or Queue()
 
     # ── HTTP avec backoff exponentiel ─────────────────────────────────────────
 

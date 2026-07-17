@@ -31,7 +31,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("queue")
 
 DB_PATH = Path(__file__).parent.parent / "queue.db"
-LOCK = threading.Lock()
+LOCK = threading.RLock()  # réentrant : _mark_retry → _mark_dead ré-acquiert le même lock
 
 # --- Constantes par défaut ---
 DEFAULT_MAX_RETRIES = 5
@@ -41,12 +41,12 @@ RETRY_DELAYS_SECONDS = [30, 60, 120, 300, 600]  # Backoff progressif
 
 # Types de messages avec configuration spécifique
 MESSAGE_CONFIG: dict[str, dict[str, Any]] = {
-    "METRICS":     {"max_retries": 5, "ttl_hours": 24, "priority": 0},
-    "CLIENTS":     {"max_retries": 5, "ttl_hours": 12, "priority": 0},
+    "METRICS":     {"max_retries": 5, "ttl_hours": 2, "priority": 0},
+    "CLIENTS":     {"max_retries": 5, "ttl_hours": 1, "priority": 0},
     "ALERT":       {"max_retries": 10, "ttl_hours": 72, "priority": 1},
-    "CMD_RESULT":  {"max_retries": 5, "ttl_hours": 48, "priority": 0},
+    "CMD_RESULT":  {"max_retries": 5, "ttl_hours": 24, "priority": 0},
     "BACKUP":      {"max_retries": 3, "ttl_hours": 168, "priority": 0},
-    "DIAGNOSTICS": {"max_retries": 3, "ttl_hours": 24, "priority": 0},
+    "DIAGNOSTICS": {"max_retries": 3, "ttl_hours": 2, "priority": 0},
     "REGISTER":    {"max_retries": 10, "ttl_hours": 72, "priority": 2},
 }
 
@@ -61,6 +61,7 @@ class Queue:
         self.db_path = Path(db_path)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_table()
 
     # ── Initialisation ──────────────────────────────────────────────────────────
@@ -428,11 +429,11 @@ class Queue:
 
     def cleanup(self) -> dict[str, int]:
         """
-        Supprime les messages délivrés et dead de plus de 7 jours.
-        Supprime les messages expirés.
+        Supprime les messages délivrés et dead de plus de 24h.
+        Supprime les messages expirés immédiatement.
         """
         now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=7)).isoformat()
+        cutoff = (now - timedelta(hours=24)).isoformat()
         results: dict[str, int] = {}
 
         with LOCK:

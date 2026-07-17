@@ -24,7 +24,7 @@ from typing import Any, Optional
 logger = logging.getLogger("storage")
 
 DB_PATH = Path(__file__).parent.parent / "agent.db"
-LOCK = threading.Lock()
+LOCK = threading.RLock()  # réentrant : évite tout self-deadlock sur stats()/push()
 
 # Rétention (jours)
 COMMANDS_RETENTION_DAYS = 90

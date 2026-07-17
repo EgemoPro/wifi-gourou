@@ -22,7 +22,43 @@ import logging
 import hmac
 import functools
 import random
+import traceback
+import faulthandler
+import signal
+import threading
+import time as _time
 from datetime import datetime, timezone
+
+# ── Diagnostics ─────────────────────────────────────────────────────────────────
+
+faulthandler.enable()
+faulthandler.register(signal.SIGQUIT, chain=True)
+faulthandler.register(signal.SIGUSR1, chain=True)
+
+# Thread watchdog : détecte si le main thread (event loop) est bloqué
+_WATCHDOG_INTERVAL = 5
+_watchdog_last_touch = _time.time()
+
+def _watchdog_loop():
+    global _watchdog_last_touch
+    while True:
+        _time.sleep(_WATCHDOG_INTERVAL)
+        now = _time.time()
+        since_last = now - _watchdog_last_touch
+        if since_last > _WATCHDOG_INTERVAL * 3:
+            print(
+                f"⚠️  WATCHDOG: main thread bloqué depuis {since_last:.0f}s",
+                flush=True,
+            )
+            faulthandler.dump_traceback(all_threads=True)
+
+_t = threading.Thread(target=_watchdog_loop, daemon=True, name="watchdog")
+_t.start()
+
+def _wd_touch():
+    global _watchdog_last_touch
+    _watchdog_last_touch = _time.time()
+
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -37,7 +73,7 @@ from fastapi.responses import FileResponse
 from config      import CONFIG
 from models      import MikroTikRawAlert, CommandRequest, ActionRequest, AlertData
 from core.ssh    import SSHPool
-from core.executor import execute_action
+from core.executor import execute_action, auto_init_router
 from core.registry import list_actions, lookup, resolve_name, get_capabilities
 from core.storage import Storage
 from core.queue   import Queue
@@ -136,8 +172,8 @@ async def loop_metrics():
     while True:
         await asyncio.sleep(interval)
         try:
-            ssh = ssh_pool.get_client()
-            metrics = collect_metrics(ssh, CONFIG)
+            ssh = await asyncio.to_thread(ssh_pool.get_client)
+            metrics = await asyncio.to_thread(collect_metrics, ssh, CONFIG)
             if not metrics:
                 continue
 
@@ -197,8 +233,8 @@ async def loop_clients():
     while True:
         await asyncio.sleep(interval)
         try:
-            ssh = ssh_pool.get_client()
-            clients = collect_clients(ssh, CONFIG)
+            ssh = await asyncio.to_thread(ssh_pool.get_client)
+            clients = await asyncio.to_thread(collect_clients, ssh, CONFIG)
             if clients:
                 await asyncio.to_thread(forwarder.send_clients, clients.model_dump())
                 if storage:
@@ -223,8 +259,8 @@ async def loop_bandwidth():
     while True:
         await asyncio.sleep(interval)
         try:
-            ssh = ssh_pool.get_client()
-            alert = check_bandwidth_abuse(ssh, CONFIG)
+            ssh = await asyncio.to_thread(ssh_pool.get_client)
+            alert = await asyncio.to_thread(check_bandwidth_abuse, ssh, CONFIG)
             if alert:
                 await asyncio.to_thread(forwarder.send_alert, alert.model_dump())
         except Exception as e:
@@ -233,27 +269,13 @@ async def loop_bandwidth():
 
 # TODO: apply @_loop_error_handler
 async def loop_offline():
+    """Vérifie la connectivité du routeur via ping (dans un thread)."""
     interval = CONFIG["intervals"]["offline_check"]
     while True:
         await asyncio.sleep(interval)
         try:
-            alert = check_router_online(CONFIG, shared_state)
-            if alert:
-                await asyncio.to_thread(forwarder.send_alert, alert.model_dump())
-        except Exception as e:
-            logger.error(f"loop_bandwidth : {e}")
-            if storage:
-                storage.push_event(CONFIG["site_id"], "error",
-                                   f"loop_bandwidth : {str(e)[:200]}")
-
-
-# TODO: apply @_loop_error_handler
-async def loop_offline():
-    interval = CONFIG["intervals"]["offline_check"]
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            alert = check_router_online(CONFIG, shared_state)
+            # check_router_online fait subprocess.run() — le lancer dans un thread
+            alert = await asyncio.to_thread(check_router_online, CONFIG, shared_state)
             if alert:
                 await asyncio.to_thread(forwarder.send_alert, alert.model_dump())
         except Exception as e:
@@ -269,9 +291,9 @@ async def loop_diagnostics():
     while True:
         await asyncio.sleep(interval)
         try:
-            ssh = ssh_pool.get_client()
-            bloat = check_user_bloat(ssh, CONFIG)
-            sched = check_scheduler_bloat(ssh, CONFIG)
+            ssh = await asyncio.to_thread(ssh_pool.get_client)
+            bloat = await asyncio.to_thread(check_user_bloat, ssh, CONFIG)
+            sched = await asyncio.to_thread(check_scheduler_bloat, ssh, CONFIG)
 
             await asyncio.to_thread(forwarder.send_diagnostics, {
                 "site_id":    CONFIG["site_id"],
@@ -329,12 +351,28 @@ async def loop_queue_flush():
                     logger.debug(f"Queue flush HTTP fail ({msg_type}): {e}")
                     return False
 
-            report = durable_queue.flush(send_fn, max_messages=25)
+            # Exécuter le flush dans un thread séparé (HTTP bloquant)
+            report = await asyncio.to_thread(
+                durable_queue.flush, send_fn, 25
+            )
             if report["sent"] > 0 or report["failed"] > 0:
                 logger.info(
                     f"Queue flush: {report['sent']} envoyés, "
                     f"{report['failed']} échoués"
                 )
+
+            # Nettoyage périodique des messages expired/dead/delivered
+            try:
+                cleaned = await asyncio.to_thread(durable_queue.cleanup)
+                if sum(cleaned.values()) > 0:
+                    logger.info(
+                        f"Queue cleanup: {sum(cleaned.values())} supprimés "
+                        f"({cleaned.get('expired',0)} expired, "
+                        f"{cleaned.get('dead',0)} dead, "
+                        f"{cleaned.get('delivered',0)} delivered)"
+                    )
+            except Exception as e:
+                logger.error(f"Queue cleanup error: {e}")
         except Exception as e:
             logger.error(f"loop_queue_flush : {e}")
 
@@ -377,7 +415,8 @@ async def loop_backup():
         if now.hour == backup_hour and last_backup_date != date:
             try:
                 logger.info(f"[BACKUP] Démarrage backup quotidien — {date}")
-                result = execute_action(
+                result = await asyncio.to_thread(
+                    execute_action,
                     ssh_pool=ssh_pool, config=CONFIG,
                     action_name="router.backup", params={},
                 )
@@ -464,10 +503,12 @@ command_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handle
 @limiter.limit("100/minute")
 @command_app.get("/health")
 async def health(request: Request):
-    _check_api_key(request)
-    fwd_q = forwarder.stats() if forwarder else {}
-    dq_stats = durable_queue.stats() if durable_queue else {}
-    st_stats = storage.stats() if storage else {}
+    # Pas d'auth — un healthcheck doit répondre même si le reste est lent
+    # stats() acquire un lock SQLite ; on déporte dans un thread pour ne
+    # jamais bloquer l'event loop (sinon un flush lent gèle /health)
+    fwd_q = await asyncio.to_thread(forwarder.stats) if forwarder else {}
+    dq_stats = await asyncio.to_thread(durable_queue.stats) if durable_queue else {}
+    st_stats = await asyncio.to_thread(storage.stats) if storage else {}
     m = shared_state.get("latest_metrics")
     return {
         "status":         "ok",
@@ -493,6 +534,21 @@ async def health(request: Request):
         "latest_cpu":     m.cpu_load     if m else None,
         "latest_clients": m.active_users if m else None,
     }
+
+
+# ── Debug : snapshots de threads ────────────────────────────────────────────────
+
+@command_app.get("/debug/stacks")
+async def debug_stacks(request: Request):
+    """Dump des stacks Python pour diagnostic."""
+    import threading, sys
+    frames = sys._current_frames()
+    stacks = {}
+    for tid, frame in frames.items():
+        thread = threading._active.get(tid)
+        tname = thread.name if thread else f"Thread-{tid}"
+        stacks[tname] = "".join(traceback.format_stack(frame))
+    return {"threads": list(stacks.keys()), "stacks": stacks}
 
 
 @limiter.limit("100/minute")
@@ -626,23 +682,31 @@ async def get_storage_stats(request: Request):
 @command_app.post("/action")
 async def receive_action(cmd: ActionRequest, request: Request):
     """
-    Nouveau endpoint unifié.
-    Reçoit {action, payload, mode} et exécute via le pipeline générique.
+    Endpoint unifié (fusionné avec /command).
+    Reçoit {action, payload, mode, command_id} et exécute via le pipeline.
+    Compatible avec l'ancien format {command, params} via résolution d'alias.
     """
     # Vérification X-API-Key
     api_key = request.headers.get("X-API-Key", "")
     if not hmac.compare_digest(api_key, CONFIG["central_api_key"]):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    action = cmd.action
-    payload = cmd.payload or {}
+    # Résolution d'alias (get_active_users → hotspot.list_active)
+    action = resolve_name(cmd.action) or cmd.action
+    if resolve_name(cmd.action):
+        logger.info(f"Alias résolu : {cmd.action} → {action}")
+
+    # Compatibilité payload + params (ancien format /command)
+    payload = cmd.payload or cmd.params or {}
     if cmd.mode:
         payload["mode"] = cmd.mode
 
     logger.info(f"Action reçue : {action} (command_id={cmd.command_id})")
 
     # Exécution via le pipeline (déduplication + auto-save dans executor)
-    result = execute_action(
+    # Lancer dans un thread séparé pour ne pas bloquer l'event loop
+    result = await asyncio.to_thread(
+        execute_action,
         ssh_pool=ssh_pool,
         config=CONFIG,
         action_name=action,
@@ -684,57 +748,25 @@ async def receive_action(cmd: ActionRequest, request: Request):
 @command_app.post("/command")
 async def receive_command(cmd: CommandRequest, request: Request):
     """
-    Ancien endpoint rétro-compatible.
-    Reçoit {command, params} — résout via les alias du registre.
+    Endpoint rétro-compatible — redirige vers /action.
+    Reçoit {command, params} → traduit en {action, payload}.
     """
-    api_key = request.headers.get("X-API-Key", "")
-    if not hmac.compare_digest(api_key, CONFIG["central_api_key"]):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    logger.info(f"Commande legacy reçue : {cmd.command}")
-    start_time = datetime.now(timezone.utc)
-
-    # Résoudre l'ancien nom via les alias
-    resolved = resolve_name(cmd.command)
-    actual_action = resolved or cmd.command
-
-    result = execute_action(
-        ssh_pool=ssh_pool,
-        config=CONFIG,
-        action_name=actual_action,
-        params=cmd.params,
+    result = await receive_action(
+        ActionRequest(
+            action=cmd.command,
+            params=cmd.params,
+        ),
+        request,
     )
 
-    elapsed_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
-    cmd_status = result.get("status", "error")
-
-    # Formater comme l'ancien CommandResult
-    legacy = {
+    # Reformater en ancien format CommandResult
+    return {
         "site_id": CONFIG["site_id"],
         "command": cmd.command,
         "status": "ok" if result.get("status") == "success" else "error",
         "result": result.get("output", result),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    await asyncio.to_thread(forwarder.send_command_result, legacy)
-
-    # Log dans storage local
-    if storage:
-        try:
-            storage.save_command(
-                command_id=f"legacy-{uuid.uuid4().hex[:12]}",
-                site_id=CONFIG["site_id"],
-                action=actual_action,
-                status=cmd_status,
-                payload=cmd.params,
-                output=result,
-                execution_time_ms=elapsed_ms,
-                error_message=result.get("error") if cmd_status != "success" else None,
-            )
-        except Exception as e:
-            logger.warning(f"Storage save_command (legacy) error: {e}")
-
-    return legacy
 
 
 # ── Téléchargement de fichiers ─────────────────────────────────────────────────
@@ -777,7 +809,6 @@ def _print_banner():
 
 async def _init_storage_and_queue():
     global forwarder, storage, durable_queue
-    forwarder = Forwarder(CONFIG)
 
     try:
         storage = Storage()
@@ -791,15 +822,19 @@ async def _init_storage_and_queue():
     except Exception as e:
         logger.warning(f"⚠️ Durable queue non disponible : {e}")
 
+    forwarder = Forwarder(CONFIG, queue=durable_queue)
+
 
 async def _init_ssh_and_test():
     global ssh_pool
     ssh_pool = SSHPool(CONFIG)
 
-    # Test connexion SSH au démarrage
+    # Test connexion SSH au démarrage (dans un thread pour ne pas bloquer l'event loop)
     try:
-        ssh = ssh_pool.get_client()
-        ident = ssh.execute("/system identity print", timeout=10)
+        ssh = await asyncio.to_thread(ssh_pool.get_client)
+        ident = await asyncio.to_thread(
+            ssh.execute, "/system identity print", 10
+        )
         if ident.get("exit_code") == 0:
             logger.info(f"✅ SSH connecté — {ident.get('stdout', '').strip()[:50]}")
         else:
@@ -818,8 +853,8 @@ async def _init_ssh_and_test():
 
 async def _first_collect():
     try:
-        ssh = ssh_pool.get_client()
-        metrics = collect_metrics(ssh, CONFIG)
+        ssh = await asyncio.to_thread(ssh_pool.get_client)
+        metrics = await asyncio.to_thread(collect_metrics, ssh, CONFIG)
         if metrics:
             shared_state["latest_metrics"] = metrics
             await asyncio.to_thread(forwarder.send_metrics, metrics.model_dump())
@@ -830,7 +865,14 @@ async def _first_collect():
         logger.warning(f"Collecte initiale échouée : {e}")
 
 
+async def _wd_pulse():
+    """Pulse watchdog chaque seconde pour prouver que l'event loop tourne."""
+    while True:
+        _wd_touch()
+        await asyncio.sleep(1)
+
 def _start_loops():
+    asyncio.create_task(_wd_pulse())
     asyncio.create_task(loop_metrics())
     asyncio.create_task(loop_clients())
     asyncio.create_task(loop_queue_flush())
@@ -848,6 +890,24 @@ async def _startup_logic():
     _print_banner()
     await _init_storage_and_queue()
     await _init_ssh_and_test()
+
+    # Auto-init routeur : active REST API + injecte on-login/cleanup sur tous les profils
+    try:
+        ssh = ssh_pool.get_client()
+        report = await asyncio.to_thread(auto_init_router, ssh, CONFIG)
+        if report.get("on_login_injected") or report.get("cleanup_created"):
+            logger.info(
+                f"[startup] Auto-init — "
+                f"{len(report['on_login_injected'])} on-login, "
+                f"{len(report['cleanup_created'])} cleanups"
+            )
+        elif report.get("errors"):
+            logger.warning(f"[startup] Auto-init — {len(report['errors'])} erreurs (non bloquant)")
+        else:
+            logger.info("[startup] Auto-init — rien à faire, routeur déjà configuré ✅")
+    except Exception as e:
+        logger.warning(f"[startup] Auto-init ignoré (non bloquant) : {e}")
+
     await _first_collect()
     _start_loops()
 
@@ -856,16 +916,25 @@ async def _startup_logic():
 
 async def start_servers():
     Path("logs").mkdir(exist_ok=True)
-    await asyncio.gather(
-        uvicorn.Server(uvicorn.Config(
-            alert_app,   host="0.0.0.0",
-            port=CONFIG["alert_port"],   log_level="warning"
-        )).serve(),
-        uvicorn.Server(uvicorn.Config(
-            command_app, host="0.0.0.0",
-            port=CONFIG["command_port"], log_level="warning"
-        )).serve(),
+
+    async def _serve_safe(app, port: int, name: str):
+        try:
+            await uvicorn.Server(uvicorn.Config(
+                app, host="0.0.0.0", port=port, log_level="warning"
+            )).serve()
+        except (SystemExit, OSError) as e:
+            logger.warning(f"⚠️ {name} (port {port}) non démarré : {e}")
+
+    # Démarrer les serveurs séquentiellement plutôt qu'en gather
+    # pour éviter les interactions entre deux instances uvicorn
+    serve_task = asyncio.create_task(
+        _serve_safe(command_app, CONFIG["command_port"], "command_app")
     )
+    # alert_app en arrière-plan (non bloquant si le port est pris)
+    asyncio.create_task(
+        _serve_safe(alert_app, CONFIG["alert_port"], "alert_app")
+    )
+    await serve_task
 
 if __name__ == "__main__":
     asyncio.run(start_servers())

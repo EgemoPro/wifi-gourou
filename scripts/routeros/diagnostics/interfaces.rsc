@@ -16,9 +16,14 @@
     :local mtu [/interface get $iface mtu]
     :local l2mtu [/interface get $iface l2mtu]
 
-    :put ("name=" . $name . "|type=" . $type . "|running=" . $running . \
-          "|disabled=" . $disabled . "|comment=" . $comment . \
-          "|mac=" . $mac . "|mtu=" . $mtu . "|l2mtu=" . $l2mtu)
+    :put ("int_" . $count . "_name=" . $name)
+    :put ("int_" . $count . "_type=" . $type)
+    :put ("int_" . $count . "_running=" . $running)
+    :put ("int_" . $count . "_disabled=" . $disabled)
+    :put ("int_" . $count . "_comment=" . $comment)
+    :put ("int_" . $count . "_mac=" . $mac)
+    :put ("int_" . $count . "_mtu=" . $mtu)
+    :put ("int_" . $count . "_l2mtu=" . $l2mtu)
     :set count ($count + 1)
 }
 

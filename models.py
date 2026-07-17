@@ -57,9 +57,10 @@ class CommandRequest(BaseModel):
 
 
 class ActionRequest(BaseModel):
-    """Nouveau format d'action unifiée."""
+    """Nouveau format d'action unifiée — fusionné avec l'ancien CommandRequest."""
     action:     str
     payload:    Dict[str, Any] = {}
+    params:     Dict[str, Any] = {}   # rétrocompatibilité /command
     mode:       Optional[str] = None  # "execute" (default), "preview"
     command_id: Optional[str] = None  # pour idempotence (n8n rejeu)
 

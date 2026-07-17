@@ -19,6 +19,8 @@ import logging
 from typing import Optional, Any
 from pathlib import Path
 
+import threading
+
 import paramiko
 
 logger = logging.getLogger("ssh")
@@ -71,6 +73,11 @@ class SSHClient:
         self._client: Optional[paramiko.SSHClient] = None
         self._sftp: Optional[paramiko.SFTPClient] = None
         self._last_error: Optional[str] = None
+        # Verrou réentrant pour sérialiser les accès SSH depuis plusieurs threads
+        # Paramiko n'est pas thread-safe — ce lock protège toutes les opérations
+        # RLock permet aux méthodes internes (execute → ensure_connected)
+        # de ré-acquérir le même verrou sans deadlock
+        self._lock = threading.RLock()
 
     # ── Connexion ──────────────────────────────────────────────────────────────
 
@@ -123,6 +130,11 @@ class SSHClient:
 
     def ensure_connected(self) -> paramiko.SSHClient:
         """Retourne le client SSH, reconnecte si nécessaire."""
+        with self._lock:
+            return self._ensure_connected_unlocked()
+
+    def _ensure_connected_unlocked(self) -> paramiko.SSHClient:
+        """Version interne sans lock. Appelée quand le lock est déjà tenu."""
         if self._client is None:
             self.connect()
         else:
@@ -130,10 +142,10 @@ class SSHClient:
                 transport = self._client.get_transport()
                 if transport is None or not transport.is_active():
                     logger.info("SSH transport inactif — reconnexion")
-                    self.disconnect()
+                    self._disconnect_unlocked()
                     self.connect()
             except Exception:
-                self.disconnect()
+                self._disconnect_unlocked()
                 self.connect()
         return self._client  # type: ignore[return-value]
 
@@ -158,12 +170,21 @@ class SSHClient:
         Exécute une commande RouterOS directement via SSH.
         Retourne {stdout, stderr, exit_code}.
 
+        Thread-safe via self._lock (RLock).
         Utile pour les lectures rapides (metrics, clients, health).
         Utilise transport.open_session() + chan.recv() au lieu de
         exec_command() pour capturer correctement la sortie /import
         sur RouterOS (ChannelFile.read() ne fonctionne pas).
         """
-        client = self.ensure_connected()
+        with self._lock:
+            return self._execute_unlocked(command, timeout)
+
+    def _execute_unlocked(self, command: str, timeout: int = 30) -> dict[str, Any]:
+        """
+        Version interne de execute() sans lock.
+        Appelée par execute() et execute_script() (qui tiennent déjà le lock).
+        """
+        client = self._ensure_connected_unlocked()
         logger.debug(f"SSH exec: {command[:120]}")
         try:
             transport = client.get_transport()
@@ -246,7 +267,21 @@ class SSHClient:
           5. Nettoie le fichier temporaire
           6. Retourne {stdout, stderr, exit_code, filename}
 
+        Thread-safe via self._lock (RLock).
         C'est le moteur principal d'exécution d'actions.
+        """
+        with self._lock:
+            return self._execute_script_unlocked(script_content, timeout, cleanup)
+
+    def _execute_script_unlocked(
+        self,
+        script_content: str,
+        timeout: int = 30,
+        cleanup: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Version interne de execute_script() sans lock.
+        Appelée par execute_script() — le lock est déjà tenu.
         """
         script_id = uuid.uuid4().hex[:12]
         remote_path = f"{MIKROTIK_TMP}/wf_{script_id}.rsc"
@@ -256,9 +291,9 @@ class SSHClient:
             self._sftp_upload(remote_path, script_content)
             logger.debug(f"Script uploadé : {remote_path}")
 
-            # Import
+            # Import (utilise _unlocked — le lock est déjà tenu)
             import_cmd = f"/import file-name={remote_path}"
-            result = self.execute(import_cmd, timeout=timeout)
+            result = self._execute_unlocked(import_cmd, timeout=timeout)
 
             # Ajouter le nom du fichaire au résultat
             result["filename"] = remote_path
@@ -405,7 +440,12 @@ class SSHClient:
     # ── Nettoyage ────────────────────────────────────────────────────────────
 
     def disconnect(self) -> None:
-        """Ferme connexion SSH et SFTP."""
+        """Ferme connexion SSH et SFTP. Thread-safe."""
+        with self._lock:
+            self._disconnect_unlocked()
+
+    def _disconnect_unlocked(self) -> None:
+        """Version interne sans lock. Appelée quand le lock est déjà tenu."""
         try:
             if self._sftp:
                 self._sftp.close()

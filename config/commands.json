@@ -2,7 +2,7 @@
   "meta": {
     "version": "2.0",
     "description": "Registre des actions wifizone-agent",
-    "updated": "2026-06-16",
+    "updated": "2026-07-17",
     "note": "Les actions de type 'routeros' exécutent un script .rsc via SSH. Les actions de type 'python' utilisent un handler Python (logique métier complexe)."
   },
 
@@ -17,7 +17,10 @@
       "params": [
         {"name": "username", "required": true, "type": "string", "max_length": 32},
         {"name": "password", "required": true, "type": "string", "max_length": 64},
-        {"name": "profile", "required": false, "type": "string", "default": "default"}
+        {"name": "profile", "required": false, "type": "string", "default": "default"},
+        {"name": "comment", "required": false, "type": "string", "default": ""},
+        {"name": "data_limit", "required": false, "type": "string", "default": ""},
+        {"name": "time_limit", "required": false, "type": "string", "default": ""}
       ],
       "danger": "low",
       "roles": ["admin", "operator"],
@@ -98,6 +101,45 @@
       "alias": ["get_active_users"]
     },
 
+    "hotspot.active_sessions": {
+      "type": "routeros",
+      "script": "hotspot/active_sessions.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Sessions hotspot actives détaillées avec consommation",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["active_sessions"]
+    },
+
+    "hotspot.list_users": {
+      "type": "routeros",
+      "script": "hotspot/list_users.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste tous les comptes utilisateur hotspot",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["list_users", "get_users"]
+    },
+
+    "hotspot.list_vouchers": {
+      "type": "routeros",
+      "script": "hotspot/list_vouchers.rsc",
+      "mode": "import",
+      "timeout": 10,
+      "description": "Liste les vouchers hotspot générés",
+      "params": [],
+      "danger": "low",
+      "roles": ["admin", "operator", "viewer"],
+      "version": "1.0",
+      "alias": ["list_vouchers", "get_vouchers"]
+    },
+
     "hotspot.block_mac": {
       "type": "routeros",
       "script": "network/block_mac.rsc",
@@ -149,6 +191,21 @@
       "roles": ["admin", "operator"],
       "version": "2.0",
       "alias": ["generate_vouchers"]
+    },
+
+    "hotspot.setup_profile": {
+      "type": "python",
+      "handler": "setup_profile",
+      "description": "Configure on-login script (expiration absolue) + scheduler cleanup pour un profile hotspot. Utilise l'API REST MikroTik.",
+      "params": [
+        {"name": "profile", "required": true, "type": "string", "description": "Nom du profile hotspot (ex: 2M-Limit)"},
+        {"name": "validity", "required": false, "type": "string", "default": "1h", "description": "Durée de validité des vouchers (ex: 1h, 1d, 7d)"},
+        {"name": "lock_mac", "required": false, "type": "string", "default": "no", "description": "yes/no — verrouiller le MAC address à la 1ère connexion"}
+      ],
+      "danger": "medium",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["setup_profile"]
     },
 
     "export_pdf": {
@@ -214,6 +271,21 @@
       "roles": ["admin", "operator", "viewer"],
       "version": "1.0",
       "alias": ["list_profiles"]
+    },
+
+    "profile.delete": {
+      "type": "routeros",
+      "script": "hotspot/delete_profile.rsc",
+      "mode": "import",
+      "timeout": 15,
+      "description": "Supprime un profil hotspot (utilisateurs + scheduler cleanup associés)",
+      "params": [
+        {"name": "profileName", "required": true, "type": "string", "max_length": 32}
+      ],
+      "danger": "high",
+      "roles": ["admin"],
+      "version": "1.0",
+      "alias": ["delete_profile"]
     },
 
     "router.reboot": {
