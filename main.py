@@ -32,8 +32,12 @@ from datetime import datetime, timezone
 # ── Diagnostics ─────────────────────────────────────────────────────────────────
 
 faulthandler.enable()
-faulthandler.register(signal.SIGQUIT, chain=True)
-faulthandler.register(signal.SIGUSR1, chain=True)
+# faulthandler.register() et SIGQUIT/SIGUSR1 n'existent pas sous Windows
+if hasattr(faulthandler, "register"):
+    for _sig_name in ("SIGQUIT", "SIGUSR1"):
+        _sig = getattr(signal, _sig_name, None)
+        if _sig is not None:
+            faulthandler.register(_sig, chain=True)
 
 # Thread watchdog : détecte si le main thread (event loop) est bloqué
 _WATCHDOG_INTERVAL = 5
@@ -825,9 +829,11 @@ async def _init_storage_and_queue():
     forwarder = Forwarder(CONFIG, queue=durable_queue)
 
 
-async def _init_ssh_and_test():
+async def _init_ssh_and_test() -> bool:
+    """Initialise le pool SSH et teste la connexion. Retourne True si le routeur répond."""
     global ssh_pool
     ssh_pool = SSHPool(CONFIG)
+    ssh_ok = False
 
     # Test connexion SSH au démarrage (dans un thread pour ne pas bloquer l'event loop)
     try:
@@ -836,6 +842,7 @@ async def _init_ssh_and_test():
             ssh.execute, "/system identity print", 10
         )
         if ident.get("exit_code") == 0:
+            ssh_ok = True
             logger.info(f"✅ SSH connecté — {ident.get('stdout', '').strip()[:50]}")
         else:
             logger.warning(f"⚠️ SSH réponse anormale : {ident.get('stderr')}")
@@ -849,6 +856,7 @@ async def _init_ssh_and_test():
 
     loop = asyncio.get_running_loop()
     loop.run_in_executor(None, forwarder.register_site, agent_url)
+    return ssh_ok
 
 
 async def _first_collect():
@@ -889,11 +897,21 @@ async def _startup_logic():
     global ssh_pool, forwarder, storage, durable_queue
     _print_banner()
     await _init_storage_and_queue()
-    await _init_ssh_and_test()
+    ssh_ok = await _init_ssh_and_test()
+
+    if not ssh_ok:
+        # Routeur injoignable : ne pas refaire 2 cycles de retries (~4 min chacun)
+        # avant d'ouvrir l'API. Les boucles de collecte se reconnecteront seules.
+        logger.warning(
+            "[startup] Routeur injoignable — auto-init et collecte initiale ignorés, "
+            "les boucles se reconnecteront en arrière-plan"
+        )
+        _start_loops()
+        return
 
     # Auto-init routeur : active REST API + injecte on-login/cleanup sur tous les profils
     try:
-        ssh = ssh_pool.get_client()
+        ssh = await asyncio.to_thread(ssh_pool.get_client)
         report = await asyncio.to_thread(auto_init_router, ssh, CONFIG)
         if report.get("on_login_injected") or report.get("cleanup_created"):
             logger.info(
