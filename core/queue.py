@@ -30,7 +30,9 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger("queue")
 
-DB_PATH = Path(__file__).parent.parent / "queue.db"
+from core.paths import DATA_DIR
+
+DB_PATH = DATA_DIR / "queue.db"
 LOCK = threading.RLock()  # réentrant : _mark_retry → _mark_dead ré-acquiert le même lock
 
 # --- Constantes par défaut ---

@@ -1,0 +1,15 @@
+# Dépendances de l'image container (arm64 / amd64).
+# Différences avec ../../requirements.txt :
+#   - fastapi-slim : pas de ujson / orjson / jinja2 / httpx (inutiles ici, plus légers)
+#   - uvicorn sans [standard] : pas de uvloop / httptools / watchfiles
+#   - PySocks : permet à `requests` de passer par le proxy SOCKS5 du container Tailscale
+fastapi-slim==0.111.0
+uvicorn==0.29.0
+pydantic>=2.12,<3
+requests==2.31.0
+PySocks==1.7.1
+paramiko==3.4.0
+python-dotenv==1.0.1
+reportlab==4.2.0
+qrcode[pil]==7.4.2
+slowapi==0.1.9

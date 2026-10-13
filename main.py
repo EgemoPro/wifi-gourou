@@ -19,6 +19,7 @@ import socket
 import asyncio
 import contextlib
 import logging
+from logging.handlers import RotatingFileHandler
 import hmac
 import functools
 import random
@@ -87,16 +88,22 @@ from workers.metrics import (
     check_user_bloat, check_scheduler_bloat,
 )
 from core.forwarding import Forwarder
+from core.paths import DATA_DIR
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-Path("logs").mkdir(exist_ok=True)
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)-8s] %(name)s — %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(
-            f"logs/{CONFIG['site_id'].lower()}.log"
+        # Rotation : 3 x 5 Mo max (ménage la clé USB), UTF-8 (emojis sous Windows)
+        RotatingFileHandler(
+            LOG_DIR / f"{CONFIG['site_id'].lower()}.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
         ),
     ]
 )
@@ -933,7 +940,7 @@ async def _startup_logic():
 # ── Lancement des 2 serveurs ──────────────────────────────────────────────────
 
 async def start_servers():
-    Path("logs").mkdir(exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     async def _serve_safe(app, port: int, name: str):
         try:

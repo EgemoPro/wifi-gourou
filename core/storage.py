@@ -23,7 +23,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger("storage")
 
-DB_PATH = Path(__file__).parent.parent / "agent.db"
+from core.paths import DATA_DIR
+
+DB_PATH = DATA_DIR / "agent.db"
 LOCK = threading.RLock()  # réentrant : évite tout self-deadlock sur stats()/push()
 
 # Rétention (jours)

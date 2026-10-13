@@ -39,9 +39,11 @@ from core.storage import Storage
 logger = logging.getLogger("executor")
 
 # Répertoires de sortie
+from core.paths import DATA_DIR
+
 BASE_DIR = Path(__file__).parent.parent
-BACKUP_DIR = BASE_DIR / "backups"
-VOUCHER_DIR = BASE_DIR / "vouchers"
+BACKUP_DIR = DATA_DIR / "backups"
+VOUCHER_DIR = DATA_DIR / "vouchers"
 os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(VOUCHER_DIR, exist_ok=True)
 
