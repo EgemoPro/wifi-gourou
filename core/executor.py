@@ -32,7 +32,12 @@ from requests.auth import HTTPBasicAuth
 
 from core.ssh import SSHPool, SSHClient
 from core.registry import lookup, resolve_name, get_script_path
-from core.validator import validate_action, validate_params, ValidationError
+from core.validator import (
+    validate_action, validate_params, ValidationError,
+    ConfirmationRequired, check_confirmation, requires_confirmation, is_truthy,
+    DEFAULT_CONFIRM_LEVELS,
+)
+from core.retention import run_retention
 from core.utils import now_iso, parse_bytes
 from core.storage import Storage
 
@@ -302,6 +307,15 @@ def execute_action(
         action_def = validate_action(action_name)
         canonical = resolve_name(action_name) or action_name
 
+        # 2b. Confirmation explicite ("confirm": true) pour les actions dangereuses.
+        #     Lue AVANT validation : "confirm" n'est pas un paramètre déclaré de la
+        #     plupart des actions et serait sinon ignoré. On ne le transmet au script
+        #     que si l'action le déclare elle-même (ex. router.reboot).
+        confirmed = is_truthy(params.get("confirm"))
+        if "confirm" not in {p["name"] for p in action_def.get("params", [])}:
+            working_params.pop("confirm", None)
+        confirm_levels = tuple(config.get("confirm_danger_levels", DEFAULT_CONFIRM_LEVELS))
+
         # 3. Valider les paramètres (sans "mode")
         validated_params = validate_params(working_params, action_def)
         logger.info(
@@ -311,7 +325,13 @@ def execute_action(
 
         # 4. Mode preview (dry-run) — ne nécessite pas SSH
         if mode == "preview":
-            return _preview_action(action_def, validated_params, cmd_id, canonical, site_id)
+            return _preview_action(
+                action_def, validated_params, cmd_id, canonical, site_id,
+                needs_confirm=requires_confirmation(action_def, confirm_levels),
+            )
+
+        # 4b. Refus si action dangereuse non confirmée (aucune exécution, aucun SSH)
+        check_confirmation({**action_def, "name": canonical}, confirmed, confirm_levels)
 
         # 5. Exécuter selon le type
         action_type = action_def.get("type", "routeros")
@@ -352,6 +372,25 @@ def execute_action(
                     logger.warning(f"[auto_hook] ⚠️ Setup auto échoué pour '{profile_name}': {hook_err}")
 
         return resp
+
+    except ConfirmationRequired as e:
+        # Volontairement NON enregistré : sinon la déduplication par command_id
+        # renverrait ce refus même après l'approbation de l'opérateur.
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        logger.warning(f"[{cmd_id}] Refusé — {e}")
+        return make_response(
+            command_id=cmd_id,
+            action=action_name,
+            site_id=site_id,
+            status="failed",
+            error={
+                "type": "CONFIRMATION_REQUIRED",
+                "message": str(e),
+                "danger": e.danger,
+                "hint": 'Renvoyer la même requête avec "confirm": true',
+            },
+            execution_time_ms=elapsed_ms,
+        )
 
     except ValidationError as e:
         elapsed_ms = int((time.time() - start_time) * 1000)
@@ -437,6 +476,7 @@ def _preview_action(
     cmd_id: str,
     canonical: str,
     site_id: str,
+    needs_confirm: bool = False,
 ) -> dict[str, Any]:
     """Génère un aperçu de la commande sans l'exécuter."""
     script_rel = action_def.get("script", "")
@@ -460,6 +500,7 @@ def _preview_action(
             "script": script_rel,
             "params": params,
             "generated": content,
+            "requires_confirmation": needs_confirm,
             "note": "Aperçu uniquement — exécutez sans mode=preview pour appliquer",
         },
         execution_time_ms=0,
@@ -679,6 +720,30 @@ def _handler_update_profile(
     return {"status": "updated", "profile": name}
 
 
+_SAFE_SITE_ID = re.compile(r"[a-z0-9_-]{1,40}")
+
+
+def _cleanup_router_backups(ssh: SSHClient, site_id: str, keep_file: str) -> dict[str, Any]:
+    """
+    Supprime sur le routeur les anciens backups de CE site, en gardant `keep_file`.
+    Sans cela, un fichier par jour s'accumule dans la flash du routeur (souvent 16 Mo).
+    N'est appelé qu'après un téléchargement local réussi et non vide.
+    """
+    if not _SAFE_SITE_ID.fullmatch(site_id):
+        return {"status": "skipped", "reason": "site_id non sûr pour un filtre RouterOS"}
+    cmd = (
+        f'/file remove [find where type="backup" and name~"^{site_id}-" '
+        f'and name!="{keep_file}"]'
+    )
+    try:
+        result = ssh.execute(cmd, timeout=15)
+        ok = isinstance(result, dict) and result.get("exit_code", 0) == 0
+        return {"status": "ok" if ok else "error", "kept": keep_file}
+    except Exception as e:
+        logger.warning(f"Ménage des anciens backups routeur ignoré : {e}")
+        return {"status": "error", "error": str(e)}
+
+
 def _handler_backup_router(
     ssh: SSHClient,
     config: dict,
@@ -713,11 +778,26 @@ def _handler_backup_router(
         # 2. Télécharger via SFTP
         ssh.download_file(remote_file, local_path)
 
-        return {
+        size_bytes = local_path.stat().st_size
+        if size_bytes <= 0:
+            raise RuntimeError("Backup téléchargé vide — fichier conservé sur le routeur")
+
+        output: dict[str, Any] = {
             "status": "ok",
             "filename": remote_file,
-            "size_kb": local_path.stat().st_size // 1024,
+            "size_kb": size_bytes // 1024,
         }
+
+        # 3. Ménage (jamais bloquant : le backup lui-même a réussi)
+        retention_cfg = config.get("retention", {}) or {}
+        if retention_cfg.get("router_keep_only_latest", True):
+            output["router_cleanup"] = _cleanup_router_backups(ssh, site_id, remote_file)
+        try:
+            output["local_retention"] = run_retention(config, BACKUP_DIR, VOUCHER_DIR)
+        except Exception as e:  # pragma: no cover - run_retention ne lève pas
+            logger.warning(f"Rétention locale ignorée : {e}")
+
+        return output
 
     except Exception as e:
         return {
@@ -1163,6 +1243,10 @@ def _handler_export_pdf(
             output_path=output_path,
         )
         logger.info(f"PDF généré : {output_path} ({len(vouchers)} tickets)")
+        try:
+            run_retention(config, BACKUP_DIR, VOUCHER_DIR)
+        except Exception as e:  # pragma: no cover - run_retention ne lève pas
+            logger.warning(f"Rétention locale ignorée : {e}")
 
         return {
             "status": "ok",

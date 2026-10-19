@@ -158,3 +158,14 @@ Premier déploiement : le faire sur **un seul site**, hors heures de pointe, ava
 | Le site n'apparaît pas sur le tailnet | Clé Tailscale invalide/expirée ; `/log print` ; DNS/Internet du routeur |
 | Le central reçoit les données mais ne peut pas commander l'agent | Adresse annoncée (nom MagicDNS non résolu → mettre l'IP `100.x`), ACL Tailscale |
 | `memory-high non supporté` | Version RouterOS ancienne : sans conséquence, la limite n'est simplement pas appliquée |
+
+## Réglages de sécurité et de rétention (variables d'environnement)
+
+| Variable | Défaut | Effet |
+|---|---|---|
+| `CONFIRM_DANGER_LEVELS` | `high` | Niveaux `danger` qui exigent `"confirm": true` dans la requête (`high`, `medium,high`, ou `none`) |
+| `BACKUP_RETENTION_DAYS` / `BACKUP_MAX_MB` / `BACKUP_KEEP_MIN` | 30 / 200 / 3 | Purge des sauvegardes locales (0 = critère désactivé) |
+| `VOUCHER_RETENTION_DAYS` / `VOUCHER_MAX_MB` / `VOUCHER_KEEP_MIN` | 30 / 200 / 0 | Purge des PDF de bons |
+| `BACKUP_ROUTER_KEEP_ONLY_LATEST` | `true` | Après un backup téléchargé avec succès, supprime les anciens `.backup` du routeur |
+
+La purge tourne au démarrage, chaque jour, et après chaque backup / export PDF.

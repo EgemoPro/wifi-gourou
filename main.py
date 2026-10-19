@@ -78,7 +78,8 @@ from fastapi.responses import FileResponse
 from config      import CONFIG
 from models      import MikroTikRawAlert, CommandRequest, ActionRequest, AlertData
 from core.ssh    import SSHPool
-from core.executor import execute_action, auto_init_router
+from core.executor import execute_action, auto_init_router, BACKUP_DIR, VOUCHER_DIR
+from core.retention import run_retention
 from core.registry import list_actions, lookup, resolve_name, get_capabilities
 from core.storage import Storage
 from core.queue   import Queue
@@ -406,6 +407,11 @@ async def loop_maintenance():
                     logger.info(f"Storage cleanup: {sum(cleaned.values())} lignes supprimées")
         except Exception as e:
             logger.error(f"loop_maintenance (storage) : {e}")
+
+        try:
+            await asyncio.to_thread(run_retention, CONFIG, BACKUP_DIR, VOUCHER_DIR)
+        except Exception as e:
+            logger.error(f"loop_maintenance (fichiers) : {e}")
 
         try:
             if durable_queue:
@@ -904,6 +910,14 @@ async def _startup_logic():
     global ssh_pool, forwarder, storage, durable_queue
     _print_banner()
     await _init_storage_and_queue()
+
+    # Ménage des fichiers au démarrage (la boucle de maintenance dort 24 h avant
+    # son premier passage : un disque déjà plein serait sinon purgé trop tard)
+    try:
+        await asyncio.to_thread(run_retention, CONFIG, BACKUP_DIR, VOUCHER_DIR)
+    except Exception as e:
+        logger.warning(f"[startup] Rétention ignorée : {e}")
+
     ssh_ok = await _init_ssh_and_test()
 
     if not ssh_ok:

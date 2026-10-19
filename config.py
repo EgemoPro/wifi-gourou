@@ -45,6 +45,18 @@ DEFAULT_BACKUP_HOUR = 2
 DEFAULT_QUEUE_FLUSH_INTERVAL = 60
 
 
+def _levels(key: str, default: str) -> tuple:
+    """Liste de niveaux de danger (ex. "medium,high"). "none" = aucune confirmation."""
+    raw = os.getenv(key, default).strip().lower()
+    if raw in ("", "none"):
+        return ()
+    return tuple(x.strip() for x in raw.split(",") if x.strip())
+
+
+def _float(key: str, default: float) -> float:
+    return float(os.getenv(key, default))
+
+
 CONFIG: dict = {
 
     # ── Identité — OBLIGATOIRE ────────────────────────────────────────────────
@@ -85,6 +97,28 @@ CONFIG: dict = {
         "backup_hour":      _int("BACKUP_HOUR",         DEFAULT_BACKUP_HOUR),
         "register_retry":   _int("REGISTER_RETRY",      60),
         "queue_flush":      _int("INTERVAL_QUEUE_FLUSH", DEFAULT_QUEUE_FLUSH_INTERVAL),
+    },
+
+    # ── Sécurité des actions ──────────────────────────────────────────────────
+    # Niveaux de "danger" (commands.json) qui exigent "confirm": true dans la requête.
+    # Défaut : high (profile.delete, router.reboot). Ex. "medium,high" ; "none" = désactivé.
+    "confirm_danger_levels": _levels("CONFIRM_DANGER_LEVELS", "high"),
+
+    # ── Rétention des fichiers générés (0 = critère désactivé) ────────────────
+    "retention": {
+        "backup": {
+            "max_age_days": _float("BACKUP_RETENTION_DAYS", 30),
+            "max_total_mb": _float("BACKUP_MAX_MB",         200),
+            "keep_min":     _int("BACKUP_KEEP_MIN",         3),
+        },
+        "voucher": {
+            "max_age_days": _float("VOUCHER_RETENTION_DAYS", 30),
+            "max_total_mb": _float("VOUCHER_MAX_MB",         200),
+            "keep_min":     _int("VOUCHER_KEEP_MIN",         0),
+        },
+        # Sur le routeur : ne garder que le dernier backup de ce site
+        "router_keep_only_latest": os.getenv("BACKUP_ROUTER_KEEP_ONLY_LATEST", "true").lower()
+                                   in ("1", "true", "yes", "on"),
     },
 
     # ── Seuils ────────────────────────────────────────────────────────────────

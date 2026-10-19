@@ -3,7 +3,7 @@
     "version": "2.0",
     "description": "Registre des actions wifizone-agent",
     "updated": "2026-07-17",
-    "note": "Les actions de type 'routeros' exécutent un script .rsc via SSH. Les actions de type 'python' utilisent un handler Python (logique métier complexe)."
+    "note": "Les actions de type 'routeros' exécutent un script .rsc via SSH. Les actions de type 'python' utilisent un handler Python (logique métier complexe). Les actions dont 'danger' vaut 'high' (par défaut, voir CONFIRM_DANGER_LEVELS) exigent \"confirm\": true dans la requête, sinon elles sont refusées sans être exécutées (erreur CONFIRMATION_REQUIRED)."
   },
 
   "actions": {

@@ -21,6 +21,54 @@ class ValidationError(Exception):
         super().__init__(message)
 
 
+class ConfirmationRequired(Exception):
+    """Action dangereuse appelée sans confirmation explicite (confirm=true)."""
+
+    def __init__(self, action: str, danger: str):
+        self.action = action
+        self.danger = danger
+        super().__init__(
+            f"Action '{action}' (danger : {danger}) : confirmation requise. "
+            f"Renvoyer la même requête avec \"confirm\": true."
+        )
+
+
+DEFAULT_CONFIRM_LEVELS: tuple[str, ...] = ("high",)
+
+
+def is_truthy(value: Any) -> bool:
+    """True pour true / "true" / "1" / "yes" / "on" ; False pour tout le reste."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    if isinstance(value, (int, float)):
+        return value == 1
+    return False
+
+
+def requires_confirmation(
+    action_def: dict[str, Any],
+    levels: Optional[tuple[str, ...]] = None,
+) -> bool:
+    """True si le niveau `danger` de l'action impose une confirmation."""
+    levels = DEFAULT_CONFIRM_LEVELS if levels is None else tuple(levels)
+    return str(action_def.get("danger", "low")).lower() in levels
+
+
+def check_confirmation(
+    action_def: dict[str, Any],
+    confirmed: bool,
+    levels: Optional[tuple[str, ...]] = None,
+) -> None:
+    """Lève ConfirmationRequired si l'action est dangereuse et non confirmée."""
+    if requires_confirmation(action_def, levels) and not confirmed:
+        raise ConfirmationRequired(
+            str(action_def.get("name", "?")),
+            str(action_def.get("danger", "?")),
+        )
+
+
 def validate_action(action_name: str) -> dict[str, Any]:
     """
     Vérifie que l'action existe dans le registre.
