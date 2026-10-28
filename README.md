@@ -89,11 +89,11 @@ Chaque action a un niveau de **danger** (`low`, `medium`, `high`) et des **alias
 ### Hotspot — profils (5)
 | Action | Danger | Description |
 |---|---|---|
-| `profile.create` | medium | Créer un profil avec limitation de débit, utilisateurs partagés, timeouts, quota |
-| `profile.update` | medium | Mettre à jour un profil existant |
+| `profile.create` | medium | Créer un profil (débit, utilisateurs partagés, timeouts) ; l'expiration automatique est ensuite posée par `hotspot.setup_profile`, appelé automatiquement après une création réussie |
+| `profile.update` | medium | Modifier débit, utilisateurs partagés, timeouts d'un profil existant |
 | `profile.list` | low | Lister les profils |
-| `profile.delete` | **high** | Supprimer un profil (comptes et scheduler de nettoyage associés) |
-| `hotspot.setup_profile` | medium | Configurer l'expiration absolue (script on-login + scheduler de nettoyage), verrouillage MAC |
+| `profile.delete` | **high** | Supprimer un profil, ses comptes et son scheduler de nettoyage ; le profil `default` est refusé |
+| `hotspot.setup_profile` | medium | Configurer l'expiration absolue (script on-login + scheduler de nettoyage toutes les 3 min), verrouillage MAC optionnel. Passe par l'API REST du routeur |
 
 ### Contrôle des adresses MAC (2)
 | Action | Danger | Description |
@@ -135,7 +135,8 @@ Chaque action a un niveau de **danger** (`low`, `medium`, `high`) et des **alias
 - **Confirmation obligatoire** : une action `high` (`profile.delete`, `router.reboot`) est refusée avec l'erreur `CONFIRMATION_REQUIRED` tant que la requête ne contient pas `"confirm": true`. Le refus n'est pas mémorisé : renvoyer la même requête avec `confirm` fonctionne. Le niveau se règle avec `CONFIRM_DANGER_LEVELS` (`high` par défaut, `medium,high`, ou `none`).
 - **Prévisualisation** : `"mode": "preview"` montre ce qui serait exécuté sans rien envoyer au routeur, et indique `requires_confirmation`.
 - **Idempotence** : un `command_id` identique renvoie le résultat déjà enregistré au lieu de ré-exécuter l'action.
-- **Validation** : types, bornes et motifs des paramètres déclarés dans `commands.json` ; les paramètres non déclarés sont écartés. Les scripts RouterOS sont déterministes (fichiers `.rsc` + paramètres injectés), jamais composés à partir de texte libre.
+- **Validation** : types, bornes et motifs des paramètres déclarés dans `commands.json` ; les paramètres non déclarés sont écartés. Les paramètres des profils (nom, validité, débit, timeouts) ont des motifs stricts, et les valeurs injectées dans les scripts que le routeur exécute ensuite (on-login, scheduler) sont revalidées et échappées.
+- **Quota de données** : RouterOS n'a pas de quota au niveau du profil ; `data_limit` est refusé sur `profile.create` / `profile.update` (à définir sur les utilisateurs et vouchers). Les scripts RouterOS sont déterministes (fichiers `.rsc` + paramètres injectés), jamais composés à partir de texte libre.
 
 ## Installation
 
@@ -197,7 +198,7 @@ Variables essentielles :
 | `DATA_DIR` | dossier du code | Dossier des données persistantes (bases, logs, backups, PDF) |
 | `ENV_PATH` | `.env` du code | Chemin d'un fichier `.env` alternatif |
 
-Autres variables : `MIKROTIK_PORT` (ancien port API, 8728), `MIKROTIK_REST_PORT`, `MIKROTIK_ROS_VERSION`.
+Autres variables : `MIKROTIK_PORT` (ancien port API, 8728), `MIKROTIK_ROS_VERSION`, `MIKROTIK_REST_PORT` (`8080`) et `MIKROTIK_REST_SCHEME` (`http` par défaut, ou `https`) pour l'API REST utilisée par `hotspot.setup_profile` et l'initialisation automatique (service `www` en HTTP, `www-ssl` en HTTPS ; l'utilisateur de l'agent doit avoir la politique `rest-api`).
 
 Sécurité et rétention :
 
@@ -309,7 +310,7 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=. --cov-report=term
 ```
 
-282 tests. `tests/test_executor.py`, `tests/test_metrics.py` et `tests/test_ssh.py` utilisent d'anciens mocks SSH et se bloquent actuellement : à mettre à jour. Les autres fichiers passent, dont `tests/test_risk_and_retention.py` (confirmation des actions dangereuses et rétention des fichiers).
+387 tests. `tests/test_executor.py`, `tests/test_metrics.py` et `tests/test_ssh.py` utilisent d'anciens mocks SSH et se bloquent actuellement : à mettre à jour. Les autres fichiers passent, dont `tests/test_risk_and_retention.py` (confirmation des actions dangereuses et rétention des fichiers) et `tests/test_profiles.py` (profils hotspot).
 
 ## Makefile
 

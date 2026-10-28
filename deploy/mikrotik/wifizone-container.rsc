@@ -101,6 +101,18 @@
     }
 }
 
+# Regle 1b : l'agent peut appeler l'API REST du routeur (profils hotspot : on-login, nettoyage)
+:local rule1b "WIFIZONE: agent vers API REST routeur"
+:if ([:len [/ip firewall filter find where comment=$rule1b]] = 0) do={
+    :if ([:len [/ip firewall filter find]] > 0) do={
+        /ip firewall filter add chain=input action=accept protocol=tcp dst-port=8080 src-address=$agIp comment=$rule1b place-before=0
+    } else={
+        /ip firewall filter add chain=input action=accept protocol=tcp dst-port=8080 src-address=$agIp comment=$rule1b
+    }
+}
+# Service REST (HTTP) sur 8080, limite a l'agent
+:do { /ip service set www disabled=no port=8080 address=($agIp . "/32") } on-error={ :put "WIFIZONE ATTENTION: service www non configure (REST indisponible)" }
+
 # Regle 2 : AUCUNE connexion nouvelle depuis les clients WiFi / le WAN vers les containers.
 # Sans elle, un client du hotspot pourrait atteindre le proxy Tailscale (donc tout le tailnet).
 :local rule2 "WIFIZONE: bloquer acces aux containers"
@@ -119,6 +131,9 @@
 } else={
     /user set [/user find where name=$agentUser] password=$agentPass
 }
+
+# Politique rest-api (absente des anciennes versions : ajoutee a part pour ne pas faire echouer le groupe)
+:do { /user group set [/user group find where name=$agentUser] policy=read,write,api,ssh,password,test,rest-api } on-error={ :put "WIFIZONE ATTENTION: politique rest-api non disponible sur cette version" }
 
 # Avertissement si le service SSH est restreint par adresse (on ne le modifie pas)
 :local sshAddr [:tostr [/ip service get ssh address]]

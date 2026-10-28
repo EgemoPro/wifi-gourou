@@ -68,6 +68,7 @@ CONFIG: dict = {
     "mikrotik_port":        _int("MIKROTIK_PORT",     8728),    # Port API (archivé)
     "mikrotik_ssh_port":    _int("MIKROTIK_SSH_PORT", 22),      # Port SSH
     "mikrotik_rest_port":   _int("MIKROTIK_REST_PORT", 8080),  # Port REST API
+    "mikrotik_rest_scheme": os.getenv("MIKROTIK_REST_SCHEME", "http").strip().lower(),  # http | https
     "mikrotik_user":        os.getenv("MIKROTIK_USER",     "admin"),
     "mikrotik_password":    _require("MIKROTIK_PASSWORD"),
     "mikrotik_ros_version": _int("MIKROTIK_ROS_VERSION", 7),

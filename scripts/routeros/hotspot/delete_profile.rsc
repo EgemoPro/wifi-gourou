@@ -8,6 +8,12 @@
 
 :if ($profileName = "") do={ :put "ERROR"; :error "profileName required" }
 
+# Le profil par defaut ne peut pas etre supprime : on refuse AVANT d'effacer les comptes.
+:if ($profileName = "default") do={
+    :put "ERROR: le profil default ne peut pas etre supprime"
+    :error "protected"
+}
+
 # Vérifier si le profil existe
 :local exists 0
 :foreach p in=[/ip hotspot user profile print as-value] do={

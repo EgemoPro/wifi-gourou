@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import requests
+from urllib.parse import quote
 from requests.auth import HTTPBasicAuth
 
 from core.ssh import SSHPool, SSHClient
@@ -112,11 +113,13 @@ def _parse_time_limit(v: Any) -> int:
 
 def _sanitize_ros_param(value: str | int, max_len: int = 50) -> str:
     """Échappe un paramètre pour une commande RouterOS (interpolation sécurisée)."""
-    s = str(value).strip()
-    # RouterOS utilise " pour les strings — on échappe les " internes
-    s = s.replace('"', '\\"')
-    # On limite la longueur pour éviter les attaques par buffer overflow
-    return s[:max_len]
+    # On limite la longueur AVANT d'échapper (pour ne pas couper une séquence en deux)
+    s = str(value).strip()[:max_len]
+    # Dans une chaîne RouterOS entre guillemets, ces caractères ont un sens :
+    #   antislash = échappement, guillemet = fin de chaîne, $ = variable ($[...] = commande), [ ] = sous-commande
+    for ch in ("\\", '"', "$", "[", "]"):
+        s = s.replace(ch, "\\" + ch)
+    return s
 
 
 def _make_code(length: int = 8, charset: str = "ABCD") -> str:
@@ -195,12 +198,22 @@ def _parse_rsc_output(stdout: str) -> dict[str, Any]:
         from_exec = [kw for kw in stdout.split() if kw.isupper() and "_" in kw]
         success_kw = {"USER_CREATED", "USER_DELETED", "USER_DISABLED",
                        "USER_ENABLED", "USER_KICKED", "MAC_BLOCKED",
-                       "MAC_UNBLOCKED", "PROFILE_CREATED", "REBOOT_INITIATED"}
+                       "MAC_UNBLOCKED", "PROFILE_CREATED", "PROFILE_DELETED",
+                       "REBOOT_INITIATED"}
         error_kw = {"ERROR", "NOT_FOUND", "ALREADY_EXISTS"}
 
-        matched = [kw for kw in from_exec if kw in success_kw or kw in error_kw]
+        def _is_error(kw: str) -> bool:
+            return kw in error_kw or kw.endswith(("_NOT_FOUND", "_ALREADY_EXISTS"))
+
+        matched = [kw for kw in from_exec if kw in success_kw or _is_error(kw)]
         if matched:
-            result["status"] = matched[0].lower()
+            kw = matched[0]
+            if kw.endswith("NOT_FOUND"):
+                result["status"] = "not_found"
+            elif kw.endswith("ALREADY_EXISTS"):
+                result["status"] = "already_exists"
+            else:
+                result["status"] = kw.lower()
         elif any(kw in stdout for kw in ["not found", "already exists"]):
             result["status"] = "error"
         else:
@@ -364,7 +377,7 @@ def execute_action(
         # ── Post-hook : création de profil → auto-setup on-login + cleanup ──
         if canonical == "profile.create" and output and isinstance(output, dict):
             profile_name = validated_params.get("profileName", "")
-            if profile_name and output.get("status") != "error":
+            if profile_name and output.get("status") == "profile_created":
                 try:
                     _handler_setup_profile(ssh, config, {"profile": profile_name})
                     logger.info(f"[auto_hook] ✅ On-login + cleanup auto-injectés sur '{profile_name}'")
@@ -550,12 +563,16 @@ def _execute_routeros_script(
     parsed = _parse_rsc_output(stdout)
 
     # Si le script a renvoyé une erreur
+    # Les lignes « clé=valeur » portent des DONNÉES (un profil nommé « error-test »
+    # ne doit pas être pris pour une erreur) : seules les autres lignes sont analysées.
+    status_text = "\n".join(l for l in stdout.splitlines() if "=" not in l).upper()
     if parsed.get("status") in ("error", "not_found", "already_exists") or \
-       any(kw in stdout.upper() for kw in ["ERROR", "NOT_FOUND", "ALREADY"]):
+       any(kw in status_text for kw in ["ERROR", "NOT_FOUND", "ALREADY"]):
         if "error" not in parsed:
             # Extraire le message d'erreur
             error_lines = [l for l in stdout.splitlines()
-                          if "error" in l.lower() or "not" in l.lower()]
+                          if "=" not in l and ("error" in l.lower() or "not" in l.lower()
+                                               or "already" in l.lower())]
             parsed["error"] = error_lines[0] if error_lines else stderr[:200]
 
     return parsed
@@ -684,38 +701,51 @@ def _handler_update_profile(
     params: dict,
 ) -> dict[str, Any]:
     """
-    Met à jour un profil hotspot existant.
-    Logique identique à l'ancien executor._update_profile.
+    Met à jour un profil hotspot existant (débit, utilisateurs partagés, timeouts).
+
+    Le profil visé est désigné explicitement (`[find where name=...]`) et le code de
+    retour du routeur est contrôlé : un échec n'est plus présenté comme une réussite.
     """
-    name = _sanitize_ros_param(params["name"])
+    name = _sanitize_ros_param(params["name"], 32)
+
+    if params.get("data_limit"):
+        return {
+            "status": "error",
+            "profile": name,
+            "error": "data_limit n'existe pas au niveau du profil RouterOS "
+                     "(à définir sur les utilisateurs/vouchers)",
+        }
 
     # Vérifier l'existence du profil
     check = ssh.execute(
-        f'/ip hotspot user/profile print where name="{name}"', timeout=10
+        f'/ip hotspot user profile print as-value where name="{name}"', timeout=10
     )
-    if not check.get("stdout", "").strip():
+    if check.get("exit_code", 0) != 0 or not check.get("stdout", "").strip():
         return {"status": "not_found", "profile": name}
 
-    # Construire la commande set
-    set_parts = [f'name="{name}"']
-    if "rate_limit" in params:
-        rl = _sanitize_ros_param(params["rate_limit"])
-        set_parts.append(f'rate-limit="{rl}"')
-    if "session_timeout" in params and params["session_timeout"]:
-        st = _sanitize_ros_param(params["session_timeout"])
-        set_parts.append(f'session-timeout="{st}"')
-    if "idle_timeout" in params and params["idle_timeout"]:
-        it = _sanitize_ros_param(params["idle_timeout"])
-        set_parts.append(f'idle-timeout="{it}"')
+    set_parts = []
+    if params.get("rate_limit") is not None and "rate_limit" in params:
+        set_parts.append(f'rate-limit="{_sanitize_ros_param(params["rate_limit"], 64)}"')
+    if params.get("session_timeout"):
+        set_parts.append(f'session-timeout="{_sanitize_ros_param(params["session_timeout"])}"')
+    if params.get("idle_timeout"):
+        set_parts.append(f'idle-timeout="{_sanitize_ros_param(params["idle_timeout"])}"')
     if "shared_users" in params:
-        su = _sanitize_ros_param(params["shared_users"])
-        set_parts.append(f"shared-users={su}")
-    if "data_limit" in params and params["data_limit"]:
-        lb = _parse_data_limit(params["data_limit"])
-        set_parts.append(f"limit-bytes-total={lb}")
+        set_parts.append(f"shared-users={int(params['shared_users'])}")
 
-    cmd = "/ip hotspot user/profile set " + " ".join(set_parts)
-    ssh.execute(cmd, timeout=10)
+    if not set_parts:
+        return {"status": "unchanged", "profile": name,
+                "detail": "aucun paramètre à modifier"}
+
+    cmd = (f'/ip hotspot user profile set [find where name="{name}"] '
+           + " ".join(set_parts))
+    result = ssh.execute(cmd, timeout=10)
+    if result.get("exit_code", 0) != 0 or "failure" in result.get("stdout", "").lower():
+        return {
+            "status": "error",
+            "profile": name,
+            "error": (result.get("stderr") or result.get("stdout") or "échec RouterOS")[:200],
+        }
 
     return {"status": "updated", "profile": name}
 
@@ -814,6 +844,10 @@ def _handler_backup_router(
 
 REST_PORT_DEFAULT = 8080
 
+# Valeurs injectées dans des scripts exécutés ensuite PAR le routeur (on-login, scheduler)
+_VALIDITY_RE = re.compile(r"(?:[0-9]+[wdhms])+")
+_PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}")
+
 
 def _rest_api_call(
     config: dict, method: str, path: str, data: dict | None = None,
@@ -827,10 +861,13 @@ def _rest_api_call(
     port = config.get("mikrotik_rest_port", REST_PORT_DEFAULT)
     user = config.get("mikrotik_user", "admin")
     password = config.get("mikrotik_password", "")
-    url = f"http://{host}:{port}/rest/{path.lstrip('/')}"
+    scheme = "https" if str(config.get("mikrotik_rest_scheme", "http")).lower() == "https" else "http"
+    url = f"{scheme}://{host}:{port}/rest/{path.lstrip('/')}"
     auth = HTTPBasicAuth(user, password)
 
-    resp = requests.request(method.upper(), url, json=data, auth=auth, timeout=timeout)
+    # En HTTPS le certificat du routeur est auto-signé : pas de vérification de chaîne
+    resp = requests.request(method.upper(), url, json=data, auth=auth, timeout=timeout,
+                            verify=(scheme != "https"))
     resp.raise_for_status()
 
     # 204 No Content → pas de body JSON
@@ -881,6 +918,8 @@ def _generate_onlogin_script(validity: str, lock_mac: bool = False) -> str:
     - Stocke l'expiration en format ISO dans le commentaire du user
     - Optionnel : verrouille le MAC address à la 1ère connexion
     """
+    if not _VALIDITY_RE.fullmatch(str(validity)):
+        raise ValueError(f"validity invalide : {validity!r} (attendu : 1h, 30m, 1d, 1w2d...)")
     lines = [
         '{',
         '  :local c [/ip hotspot user get [find where name="$user"] comment];',
@@ -897,7 +936,7 @@ def _generate_onlogin_script(validity: str, lock_mac: bool = False) -> str:
         '    /system scheduler remove [find name="$user"];',
     ]
     if lock_mac:
-        lines.append('    :local mac "$mac-address";')
+        lines.append('    :local mac $"mac-address";')
         lines.append('    /ip hotspot user set mac-address=$mac [find where name="$user"];')
     lines.append('  }')
     lines.append('}')
@@ -919,6 +958,9 @@ def _generate_cleanup_script(profile_name: str) -> str:
     Les conditions sont indépendantes (pas de else, juste des if qui
     vérifient le niveau précédent).
     """
+    if not _PROFILE_NAME_RE.fullmatch(str(profile_name)):
+        raise ValueError(f"nom de profil invalide : {profile_name!r}")
+    profile_name = _sanitize_ros_param(profile_name, 32)
     return (
         ':local dNow [/system clock get date];\n'
         ':local tNow [/system clock get time];\n'
@@ -995,10 +1037,13 @@ def _handler_setup_profile(
     """
     profile = params["profile"]
     validity = params.get("validity", "1h")
+    if not _PROFILE_NAME_RE.fullmatch(str(profile)) or not _VALIDITY_RE.fullmatch(str(validity)):
+        return {"status": "error", "profile": str(profile)[:40],
+                "error": "profil ou validité au format invalide"}
     lock_mac = params.get("lock_mac", "").lower() in ("yes", "true", "1")
 
     # 1. Vérifier que le profile existe
-    profile_data = _rest_api_get(config, f"ip/hotspot/user/profile/{profile}")
+    profile_data = _rest_api_get(config, f"ip/hotspot/user/profile/{quote(str(profile), safe='')}")
     if profile_data is None:
         return {"status": "not_found", "profile": profile, "detail": "Aucune donnée retournée par l'API REST"}
     if isinstance(profile_data, list) and not profile_data:
@@ -1006,7 +1051,7 @@ def _handler_setup_profile(
 
     # 2. Injecter le on-login script
     login_script = _generate_onlogin_script(validity, lock_mac)
-    _rest_api_patch(config, f"ip/hotspot/user/profile/{profile}", {"on-login": login_script})
+    _rest_api_patch(config, f"ip/hotspot/user/profile/{quote(str(profile), safe='')}", {"on-login": login_script})
     logger.info(f"[setup_profile] On-login injecté ({len(login_script)} chars) → {profile}")
 
     # 3. Créer/mettre à jour le scheduler cleanup
@@ -1082,8 +1127,9 @@ def auto_init_router(ssh: SSHClient, config: dict) -> dict[str, Any]:
     except Exception:
         logger.info("[auto_init] API REST inactive — activation via SSH...")
         try:
+            service = "www-ssl" if str(config.get("mikrotik_rest_scheme", "http")).lower() == "https" else "www"
             result = ssh.execute(
-                f"/ip service set www-ssl disabled=no port={rest_port}",
+                f"/ip service set {service} disabled=no port={rest_port}",
                 timeout=10,
             )
             if result.get("exit_code") == 0:

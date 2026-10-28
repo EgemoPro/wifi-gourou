@@ -198,9 +198,9 @@
       "handler": "setup_profile",
       "description": "Configure on-login script (expiration absolue) + scheduler cleanup pour un profile hotspot. Utilise l'API REST MikroTik.",
       "params": [
-        {"name": "profile", "required": true, "type": "string", "description": "Nom du profile hotspot (ex: 2M-Limit)"},
-        {"name": "validity", "required": false, "type": "string", "default": "1h", "description": "Durée de validité des vouchers (ex: 1h, 1d, 7d)"},
-        {"name": "lock_mac", "required": false, "type": "string", "default": "no", "description": "yes/no — verrouiller le MAC address à la 1ère connexion"}
+        {"name": "profile", "required": true, "type": "string", "description": "Nom du profile hotspot (ex: 2M-Limit)", "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}\\Z"},
+        {"name": "validity", "required": false, "type": "string", "default": "1h", "description": "Durée de validité des vouchers (ex: 1h, 1d, 7d)", "pattern": "^([0-9]+[wdhms])+\\Z"},
+        {"name": "lock_mac", "required": false, "type": "string", "default": "no", "description": "yes/no — verrouiller le MAC address à la 1ère connexion", "pattern": "^(yes|no)\\Z"}
       ],
       "danger": "medium",
       "roles": ["admin"],
@@ -227,14 +227,14 @@
       "script": "hotspot/create_profile.rsc",
       "mode": "import",
       "timeout": 15,
-      "description": "Crée un profil hotspot avec rate-limiting",
+      "description": "Crée un profil hotspot (débit, utilisateurs partagés, timeouts). data_limit n'existe pas au niveau profil RouterOS : à utiliser sur les utilisateurs/vouchers",
       "params": [
-        {"name": "profileName", "required": true, "type": "string", "max_length": 32},
-        {"name": "rate_limit", "required": false, "type": "string", "default": "1M/1M"},
-        {"name": "shared_users", "required": false, "type": "int", "default": 1},
-        {"name": "session_timeout", "required": false, "type": "string", "default": ""},
-        {"name": "idle_timeout", "required": false, "type": "string", "default": ""},
-        {"name": "data_limit", "required": false, "type": "string", "default": ""}
+        {"name": "profileName", "required": true, "type": "string", "max_length": 32, "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}\\Z"},
+        {"name": "rate_limit", "required": false, "type": "string", "default": "1M/1M", "pattern": "^[0-9kKmMgG/ ]{0,64}\\Z"},
+        {"name": "shared_users", "required": false, "type": "int", "default": 1, "min": 1, "max": 1000},
+        {"name": "session_timeout", "required": false, "type": "string", "default": "", "pattern": "^([0-9]+[wdhms])*\\Z"},
+        {"name": "idle_timeout", "required": false, "type": "string", "default": "", "pattern": "^([0-9]+[wdhms])*\\Z"},
+        {"name": "data_limit", "required": false, "type": "string", "default": "", "pattern": "^([0-9]+(\\.[0-9]+)?[kKmMgG][bB]?|[0-9]*)\\Z"}
       ],
       "danger": "medium",
       "roles": ["admin"],
@@ -247,12 +247,12 @@
       "handler": "update_profile",
       "description": "Met à jour un profil hotspot existant",
       "params": [
-        {"name": "name", "required": true, "type": "string"},
-        {"name": "rate_limit", "required": false, "type": "string"},
-        {"name": "shared_users", "required": false, "type": "int"},
-        {"name": "session_timeout", "required": false, "type": "string"},
-        {"name": "idle_timeout", "required": false, "type": "string"},
-        {"name": "data_limit", "required": false, "type": "string"}
+        {"name": "name", "required": true, "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}\\Z"},
+        {"name": "rate_limit", "required": false, "type": "string", "pattern": "^[0-9kKmMgG/ ]{0,64}\\Z"},
+        {"name": "shared_users", "required": false, "type": "int", "min": 1, "max": 1000},
+        {"name": "session_timeout", "required": false, "type": "string", "pattern": "^([0-9]+[wdhms])*\\Z"},
+        {"name": "idle_timeout", "required": false, "type": "string", "pattern": "^([0-9]+[wdhms])*\\Z"},
+        {"name": "data_limit", "required": false, "type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?[kKmMgG][bB]?|[0-9]*)\\Z"}
       ],
       "danger": "medium",
       "roles": ["admin"],
@@ -280,7 +280,7 @@
       "timeout": 15,
       "description": "Supprime un profil hotspot (utilisateurs + scheduler cleanup associés)",
       "params": [
-        {"name": "profileName", "required": true, "type": "string", "max_length": 32}
+        {"name": "profileName", "required": true, "type": "string", "max_length": 32, "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}\\Z"}
       ],
       "danger": "high",
       "roles": ["admin"],
